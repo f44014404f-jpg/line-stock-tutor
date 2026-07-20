@@ -170,7 +170,20 @@ def parse_json(s):
         return {}
 
 
-SHORT = "回答精簡、適合手機閱讀，最多 8 行；每個重點各自一行、可用「‧」開頭條列，不要一大段擠在一起。"
+def tidy_text(t):
+    """把 Gemini 的 Markdown 清成 LINE 看得順的純文字（LINE 不渲染 Markdown）。"""
+    if not t:
+        return t
+    t = re.sub(r"\*\*(.+?)\*\*", r"\1", t)          # **粗體** → 粗體
+    t = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", t)     # # 標題 → 去掉井號
+    t = re.sub(r"(?m)^\s*[\*\-]\s+", "‧ ", t)       # * / - 條列 → ‧
+    t = re.sub(r"`([^`]*)`", r"\1", t)              # `code` → code
+    t = re.sub(r"\n{3,}", "\n\n", t)                # 過多空行收斂
+    return t.strip()
+
+
+SHORT = ("回答精簡、適合手機閱讀，最多 8 行。用純文字排版：不要用 ** 星號粗體、# 井號、"
+         "- 或 * 當條列符號等任何 Markdown；要分點就用「‧」開頭、每點各自一行、點跟點之間空一行。")
 
 # 一般股票教育家教
 TUTOR = (
@@ -239,7 +252,7 @@ def teach_lesson(user):
         "結構：①一句話定義 ②為什麼重要 ③一個台股情境例子 ④最常見的誤用/陷阱。"
         f"最後用一行『🤔 想想看：』出 1 個開放式問題讓學生思考（不要給答案）。{SHORT}"
     )
-    body = ask_gemini(sys, f"教我：{topic}")
+    body = tidy_text(ask_gemini(sys, f"教我：{topic}"))
     add_lesson(user, {"source_type": "daily_lesson", "title": topic,
                       "ai_explanation": body[:2000], "user_understanding": "",
                       "created_at": tw_now()})
@@ -258,7 +271,7 @@ def handle_note(user, body):
         "②指出 1 個他可能還不確定或需要查證的地方。"
         "不要長篇，不要幫他下結論。繁體中文。"
     )
-    tidy = ask_gemini(sys, body)
+    tidy = tidy_text(ask_gemini(sys, body))
     add_lesson(user, {"source_type": "book_note", "title": body[:30],
                       "ai_explanation": "", "user_understanding": body[:2000],
                       "corrected_note": tidy[:2000], "created_at": tw_now()})
@@ -458,7 +471,7 @@ def chat_reply(user, s, pending):
         ctx = ("（以下是我們剛剛的對話，請延續脈絡回答、不要重複已說過的內容）\n"
                + "\n".join(f"我問：{t.get('q','')}\n你答：{t.get('a','')[:180]}"
                            for t in log[-4:]) + "\n\n")
-    answer = ask_gemini(TUTOR, ctx + f"現在的問題：{s}")
+    answer = tidy_text(ask_gemini(TUTOR, ctx + f"現在的問題：{s}"))
     log.append({"q": s, "a": answer})
     set_state(user, "chat", json.dumps({"log": log[-6:]}, ensure_ascii=False))
     return answer
@@ -478,7 +491,7 @@ def start_capture(user):
            '格式：{"topic":"","summary":"","question":""}')
     data = extract_json(ask_gemini(sys, convo, temp=0.3)) or {}
     topic = data.get("topic") or "本次學習"
-    summary = data.get("summary") or ""
+    summary = tidy_text(data.get("summary") or "")
     question = data.get("question") or "用你自己的話，說說剛剛學到的重點是什麼？"
     set_state(user, "verify",
               json.dumps({"topic": topic, "summary": summary, "question": question},
