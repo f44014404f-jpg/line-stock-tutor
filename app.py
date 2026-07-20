@@ -163,7 +163,7 @@ def extract_json(s: str):
         return None
 
 
-SHORT = "回答精簡、適合手機閱讀，最多 8 行，不要長篇大論。"
+SHORT = "回答精簡、適合手機閱讀，最多 8 行；每個重點各自一行、可用「‧」開頭條列，不要一大段擠在一起。"
 
 # 一般股票教育家教
 TUTOR = (
@@ -172,6 +172,43 @@ TUTOR = (
     "重要界線：只做觀念教學與思路引導，絕不報明牌、不預測特定個股漲跌、不給買賣點。"
     f"若被要求報明牌就婉拒並把問題導回『可驗證的規則』。{SHORT}"
 )
+
+
+# ---------- LINE Flex 卡片（讓回覆排版清楚，不再是一坨字）----------
+CAT_ACCENT = {"A": "#16A34A", "B": "#D97706", "C": "#2563EB", "D": "#6B7280"}
+CAT_TAG = {"A": "🟢 A ‧ 可直接回測", "B": "🟡 B ‧ 需補條件",
+           "C": "🔵 C ‧ 觀念檢查表", "D": "⚪ D ‧ 太模糊"}
+
+
+def info_card(accent, tag, title, rows, footer=None, alt=None):
+    """通用資訊卡：彩色標題 + 若干（小標, 內文）段落；內文空的會略過。"""
+    body = []
+    for label, value in rows:
+        if not value:
+            continue
+        if label:
+            body.append({"type": "text", "text": label, "size": "xs",
+                         "weight": "bold", "color": accent, "margin": "md"})
+        body.append({"type": "text", "text": str(value), "size": "sm",
+                     "wrap": True, "color": "#333333",
+                     "margin": "xs" if label else "sm"})
+    bubble = {
+        "type": "bubble", "size": "mega",
+        "header": {"type": "box", "layout": "vertical", "backgroundColor": accent,
+                   "paddingAll": "16px", "spacing": "xs", "contents": [
+                       {"type": "text", "text": tag, "size": "xs",
+                        "color": "#FFFFFFDD", "wrap": True},
+                       {"type": "text", "text": title, "size": "lg", "weight": "bold",
+                        "color": "#FFFFFF", "wrap": True}]},
+        "body": {"type": "box", "layout": "vertical", "paddingAll": "16px",
+                 "spacing": "none", "contents": body or [
+                     {"type": "text", "text": "—", "size": "sm", "color": "#999999"}]},
+    }
+    if footer:
+        bubble["footer"] = {"type": "box", "layout": "vertical", "paddingAll": "12px",
+                            "contents": [{"type": "text", "text": footer, "size": "xxs",
+                                          "color": "#AAAAAA", "wrap": True}]}
+    return {"flex": bubble, "alt": alt or title}
 
 
 # ---------- 「學一課」：教一個觀念 + 出題 ----------
@@ -196,7 +233,9 @@ def teach_lesson(user):
     add_lesson(user, {"source_type": "daily_lesson", "title": topic,
                       "ai_explanation": body[:2000], "user_understanding": "",
                       "created_at": tw_now()})
-    return f"📘 今日一課：{topic}\n\n{body}\n\n（有想法就打「想法：…」記下來）\n{DISCLAIMER}"
+    return info_card("#0D9488", "📘 今日一課", topic, [("", body)],
+                     footer="有想法就打「想法：…」記下來　·　" + DISCLAIMER,
+                     alt=f"今日一課：{topic}")
 
 
 # ---------- 「筆記：」讀書心得整理 ----------
@@ -213,7 +252,11 @@ def handle_note(user, body):
     add_lesson(user, {"source_type": "book_note", "title": body[:30],
                       "ai_explanation": "", "user_understanding": body[:2000],
                       "corrected_note": tidy[:2000], "created_at": tw_now()})
-    return f"📝 已存成學習筆記：\n\n{tidy}\n\n（若這心得能變成可驗證規則，改打「想法：…」）\n{DISCLAIMER}"
+    return info_card("#2563EB", "📝 已存成學習筆記",
+                     (body[:22] + "…") if len(body) > 22 else body,
+                     [("重點整理", tidy)],
+                     footer="若能變成可驗證規則，改打「想法：…」　·　" + DISCLAIMER,
+                     alt="學習筆記")
 
 
 # ---------- 「想法：」核心 —— 分類 A/B/C/D + 轉假設 JSON ----------
@@ -267,9 +310,6 @@ def handle_idea(user, body):
     followup = data.get("followup", "")
     hyp = data.get("hypothesis")
 
-    cat_label = {"A": "🟢 A 可直接回測", "B": "🟡 B 需補條件",
-                 "C": "🔵 C 觀念/檢查表", "D": "⚪ D 太模糊"}.get(cat, "⚪ D")
-
     # A / B：存成假設 + 產生 JSON 檔內容
     if cat in ("A", "B") and hyp:
         seq = count_hypotheses(user) + 1
@@ -281,22 +321,28 @@ def handle_idea(user, body):
             "category": cat, "status": "draft", "rule_json": rule_json,
             "source_idea": body[:500], "created_at": tw_now(),
         })
-        msg = [f"{cat_label}　{hid}", f"💡 {hyp.get('hypothesis','')}", f"（{reason}）"]
+        rows = [("為什麼這樣分類", reason)]
         if cat == "B" and followup:
-            msg.append(f"\n❓ 還需要你補：{followup}\n補完再打一次「想法：…」會更準。")
-        msg.append(f"\n已存進假設表 ✅ 週日打「整理本週」可匯出給 Codex 回測。")
-        msg.append(DISCLAIMER)
-        return "\n".join(msg)
+            rows.append(("還需要你補充", f"{followup}（補完再打一次「想法：…」會更完整）"))
+        rows.append(("狀態", f"已存成 {hid}，週日打「整理本週」可匯出給 Codex 回測"))
+        return info_card(CAT_ACCENT[cat], f"{CAT_TAG[cat]}　{hid}",
+                         hyp.get("hypothesis", body[:60]), rows,
+                         footer=DISCLAIMER, alt=f"{hid}（{cat}類假設）")
 
     # C / D：只給回饋，不存假設（C 可存成檢查表 lesson）
     if cat == "C":
         add_lesson(user, {"source_type": "checklist", "title": body[:30],
                           "user_understanding": body[:500], "corrected_note": reason,
                           "created_at": tw_now()})
-        return f"{cat_label}\n{reason}\n\n已收進『觀念檢查表』。這類不適合回測，但選股時可拿來檢查。\n{DISCLAIMER}"
-    return (f"{cat_label}\n{reason}\n\n這個想法太模糊、還不能驗證。"
-            f"試著加上『明確門檻＋期間＋用哪個資料欄位』再說一次，例如："
-            f"『連續3個月營收YoY>20%且股價站上季線』。\n{DISCLAIMER}")
+        return info_card(CAT_ACCENT["C"], CAT_TAG["C"], body[:60],
+                         [("導師說", reason),
+                          ("怎麼用", "這類不適合回測，但選股時可放進檢查表提醒自己")],
+                         footer=DISCLAIMER, alt="C類（觀念檢查表）")
+    return info_card(CAT_ACCENT["D"], CAT_TAG["D"], body[:60],
+                     [("導師說", reason),
+                      ("怎麼改才能驗證",
+                       "加上『明確門檻＋期間＋資料欄位』，例：連續3個月營收YoY>20%且股價站上季線")],
+                     footer=DISCLAIMER, alt="D類（太模糊）")
 
 
 # ---------- 「整理本週」weekly_review ----------
