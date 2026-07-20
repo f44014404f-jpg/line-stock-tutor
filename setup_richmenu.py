@@ -23,7 +23,7 @@ def area(cx, cy, w, h, text):
 
 # 順序要跟 make_menu.py 的 cells 一致
 cells = [
-    ("想法", 0), ("筆記", 1), ("學一課", 2),
+    ("想法", 0), ("記起來", 1), ("學一課", 2),
     ("整理本週", 0), ("操作手冊", 1), ("選單", 2),
 ]
 areas = [area(x[col], (i // 3) * rh, cw[col], rh, text)

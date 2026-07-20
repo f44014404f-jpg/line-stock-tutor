@@ -163,6 +163,13 @@ def extract_json(s: str):
         return None
 
 
+def parse_json(s):
+    try:
+        return json.loads(s) if s else {}
+    except Exception:
+        return {}
+
+
 SHORT = "回答精簡、適合手機閱讀，最多 8 行；每個重點各自一行、可用「‧」開頭條列，不要一大段擠在一起。"
 
 # 一般股票教育家教
@@ -405,7 +412,7 @@ WELCOME = (
     "• 筆記：<讀書心得> → 幫你整理成學習筆記\n"
     "• 整理本週 → 產出週複核，附一段可直接丟 GPT/Codex 的 prompt\n\n"
     "📘 打「學一課」→ 每次教你一個投資觀念\n"
-    "💬 其他時候直接問我股票觀念就好（我只教觀念、不報明牌）\n\n"
+    "💬 其他時候直接問我股票觀念；學到一段就按「記起來」，我會考你一題再幫你存成筆記\n\n"
     "💡 隨時打「操作手冊」看完整說明。\n" + DISCLAIMER
 )
 
@@ -415,7 +422,7 @@ HELP = (
     "• 筆記：<心得> → 整理成學習筆記\n"
     "• 整理本週 → 週複核 + 給 Codex 的 prompt\n"
     "• 學一課 → 教一個觀念\n"
-    "• 直接發問 → 一般股票教育問答\n\n"
+    "• 直接發問 → 一般問答；學完按「記起來」，我考你一題並存成筆記\n\n"
     "💡 打「選單」看歡迎說明、「操作手冊」看完整教學。"
 )
 
@@ -440,6 +447,76 @@ MANUAL = (
     "打「學一課」每次教一個觀念；其他時候直接問股票觀念。\n\n"
     "【界線】只做投資教育與研究，不報明牌、不給買賣建議。\n" + DISCLAIMER
 )
+
+
+# ---------- 一般問答（帶短期記憶）+「記起來」認證存筆記 ----------
+# 對話緩衝存在使用者 state 的 pending：{"log":[{"q":..,"a":..}, ...]}，保留最近幾輪。
+def chat_reply(user, s, pending):
+    log = parse_json(pending).get("log", [])
+    ctx = ""
+    if log:
+        ctx = ("（以下是我們剛剛的對話，請延續脈絡回答、不要重複已說過的內容）\n"
+               + "\n".join(f"我問：{t.get('q','')}\n你答：{t.get('a','')[:180]}"
+                           for t in log[-4:]) + "\n\n")
+    answer = ask_gemini(TUTOR, ctx + f"現在的問題：{s}")
+    log.append({"q": s, "a": answer})
+    set_state(user, "chat", json.dumps({"log": log[-6:]}, ensure_ascii=False))
+    return answer
+
+
+def start_capture(user):
+    """按「記起來」：把剛剛的問答濃縮成重點 + 出一題考使用者，進入 verify 模式。"""
+    _, pending = get_state(user)
+    log = parse_json(pending).get("log", [])
+    if not log:
+        return ("先問我一些問題、學一段東西，再按「記起來」，我才知道要幫你記什麼 🙂\n"
+                "（例如先問「損益表要看什麼」，聊完再按「記起來」）")
+    convo = "\n".join(f"問：{t.get('q','')}\n答：{t.get('a','')}" for t in log[-6:])
+    sys = ("根據以下師生問答，做三件事，只輸出一個 JSON（前後不要有多餘文字）："
+           "topic=一句話主題；summary=3到5個重點（用換行分隔的字串）；"
+           "question=一個能檢驗核心理解的問題（繁中）。"
+           '格式：{"topic":"","summary":"","question":""}')
+    data = extract_json(ask_gemini(sys, convo, temp=0.3)) or {}
+    topic = data.get("topic") or "本次學習"
+    summary = data.get("summary") or ""
+    question = data.get("question") or "用你自己的話，說說剛剛學到的重點是什麼？"
+    set_state(user, "verify",
+              json.dumps({"topic": topic, "summary": summary, "question": question},
+                         ensure_ascii=False))
+    return (f"🧠 存筆記前，先確認你懂了 —\n\n📌 {topic}\n\n❓ {question}\n\n"
+            "（直接回答；或打「跳過」不考直接存）")
+
+
+def handle_verify(user, s, pending):
+    """verify 模式：判分 → 存成筆記 → 回到聊天。"""
+    st = parse_json(pending)
+    topic = st.get("topic", "本次學習")
+    summary = st.get("summary", "")
+    question = st.get("question", "")
+    skipped = s in ("跳過", "略過", "直接存", "存", "skip")
+    if skipped:
+        grade, feedback = "略過", ""
+    else:
+        sys = ("你是老師，依主題與問題評判學生回答，態度寬鬆鼓勵。只輸出 JSON："
+               '{"grade":"懂了/大致懂/需加強 三選一","feedback":"一句話訂正或補充（繁中）"}')
+        j = extract_json(ask_gemini(
+            sys, f"主題：{topic}\n問題：{question}\n學生回答：{s}", temp=0.3)) or {}
+        grade = j.get("grade", "大致懂")
+        feedback = j.get("feedback", "")
+    note = f"[{grade}]" + (f" {feedback}" if feedback else "")
+    add_lesson(user, {"source_type": "qa_note", "title": topic,
+                      "ai_explanation": summary,
+                      "user_understanding": "" if skipped else s,
+                      "corrected_note": note, "created_at": tw_now()})
+    set_state(user, "chat", "")          # 清空對話緩衝、回到聊天
+    rows = [("重點整理", summary)]
+    if not skipped:
+        rows.append(("你的回答", s))
+    if feedback:
+        rows.append(("訂正 / 補充", feedback))
+    return info_card("#0D9488", f"🧠 已記起來 ‧ {grade}", topic, rows,
+                     footer="週日「整理本週」或雙擊匯出.bat 會一起交給 GPT/Codex　·　" + DISCLAIMER,
+                     alt=f"筆記：{topic}")
 
 
 # ---------- 路由 ----------
@@ -477,13 +554,22 @@ def route(text, user):
     if s in ("學一課", "今天學一課", "教我一課", "上課", "一課"):
         return teach_lesson(user)
 
+    # 記起來：把剛剛的問答考一題後存成筆記
+    if s in ("記起來", "存筆記", "記筆記", "我懂了", "記成筆記"):
+        return start_capture(user)
+
     # 模式切換
     if s in ("導師", "聊天", "問答", "一般"):
         set_state(user, "chat", "")
         return "已回到一般教育問答，直接問我股票觀念就好（我只教觀念、不報明牌）。"
 
-    # 預設：一般股票教育問答
-    return ask_gemini(TUTOR, s)
+    # 讀狀態：判斷是否在「認證中」，並取出短期對話記憶
+    mode, pending = get_state(user)
+    if mode == "verify":
+        return handle_verify(user, s, pending)
+
+    # 預設：一般股票教育問答（帶短期記憶）
+    return chat_reply(user, s, pending)
 
 
 # ---------- LINE Webhook ----------
