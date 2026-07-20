@@ -107,6 +107,18 @@ function doPost(e) {
       return json_({ ok: true, rows: rows });
     }
 
+    if (a === "export") {
+      var since = p.since || "0000-00-00";
+      var byDate = function (x) {
+        return String(x.created_at).slice(0, 10) >= since;
+      };
+      return json_({
+        ok: true,
+        lessons: rowsAsObjects_(sheet_("lessons")).filter(byDate),
+        hypotheses: rowsAsObjects_(sheet_("hypotheses")).filter(byDate),
+      });
+    }
+
     return json_({ ok: false, error: "unknown action" });
   } catch (err) {
     return json_({ ok: false, error: String(err) });
