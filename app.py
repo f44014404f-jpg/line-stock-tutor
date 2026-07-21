@@ -649,9 +649,23 @@ def to_messages(result):
     return msgs[:5]
 
 
+def show_loading(user_id, seconds=20):
+    """在 1:1 對話顯示『輸入中…』動畫（免費：不算推播、也不呼叫 AI）。"""
+    if not user_id or user_id == "unknown":
+        return
+    try:
+        requests.post("https://api.line.me/v2/bot/chat/loading/start",
+                      headers={"Authorization": f"Bearer {LINE_TOKEN}",
+                               "Content-Type": "application/json"},
+                      json={"chatId": user_id, "loadingSeconds": seconds}, timeout=5)
+    except Exception as e:
+        print("loading anim error:", e)
+
+
 @handler.add(MessageEvent, message=TextMessageContent)
 def on_message(event):
     user_id = getattr(event.source, "user_id", "unknown")
+    show_loading(user_id)          # 先跳「輸入中…」動畫，讓你知道它醒著、正在處理
     reply = route(event.message.text, user_id)
     with ApiClient(configuration) as api_client:
         MessagingApi(api_client).reply_message(
