@@ -218,18 +218,40 @@ def tidy_text(t):
     return t.strip()
 
 
-FORMAT = ("用純文字排版（LINE 不吃 Markdown）：不要用 ** 星號、# 井號、-/* 當條列符號；"
-          "分點用「‧」開頭、每點一行，大項底下的細項用全形空格縮排，段落之間空一行。")
+def split_bubbles(text, max_bubbles=5, soft=460):
+    """長回覆在段落（空行）處拆成多則訊息，手機上比一大坨泡泡好讀。"""
+    text = (text or "").strip()
+    if len(text) <= soft:
+        return text
+    paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    bubbles, cur = [], ""
+    for p in paras:
+        if cur and len(cur) + len(p) + 2 > soft:
+            bubbles.append(cur)
+            cur = p
+        else:
+            cur = (cur + "\n\n" + p) if cur else p
+    if cur:
+        bubbles.append(cur)
+    if len(bubbles) > max_bubbles:          # 超過就把多的併回最後一則
+        bubbles = bubbles[:max_bubbles - 1] + ["\n\n".join(bubbles[max_bubbles - 1:])]
+    return bubbles if len(bubbles) > 1 else text
+
+
+FORMAT = ("用純文字、手機好讀的排版（LINE 不吃 Markdown，別用 ** # - *）："
+          "每行盡量短（手機一行約 15 字就會換行）；分點用「‧」開頭、一點一行；"
+          "段落與大項之間空一行；不要用空格縮排堆疊，寧可拆成短句分行；用詞精簡、別重複贅字。")
 
 # 一般股票教育家教（深度會依使用者要求自動調整）
 TUTOR = (
     "你是務實又有料的台股投資教育導師，對象是認真做功課的散戶。用繁體中文、給白話例子。\n"
     "回答深度看使用者要什麼：\n"
     "‧ 一般小問題：講清楚重點就好、不灌水（約 5~8 行）。\n"
-    "‧ 但當他說『重點列出來／詳細／整個章節／主要在講什麼／細一點／全部』這類，"
-    "就給完整有結構的深講，不要只講短短的：先一句話點出這主題在講什麼，"
-    "再分成幾個大項，每個大項寫「名稱 → 重點 → 要特別注意什麼」，底下再用縮排細項展開，"
-    "最後一行邀請他『想深入哪一項再問我』。寧可一次講清楚，不要擠牙膏。\n"
+    "‧ 當他說『重點列出來／詳細／整個章節／主要在講什麼／細一點／全部』這類，就給完整深講。"
+    "格式一定要手機好讀：先用一句短話點出主題，再列幾個大項，每個大項固定用這種短行格式：\n"
+    "【大項名稱】\n重點：一句短話\n注意：一句短話\n"
+    "大項之間空一行。每行都要短、精簡，絕不要把重點跟注意擠在同一長行、"
+    "也不要重複『公司的…』這種贅字。最後一行邀請他『想深入哪一項再問我』。\n"
     "界線：只教觀念，絕不報明牌、不預測個股、不給買賣點。"
     "你看不到即時或歷史股價／營收／籌碼資料；被問特定個股的具體數字時要老實說"
     "『我看不到即時資料，請用你本機的股票系統或 Codex 查』，絕不編造數字。\n"
@@ -514,7 +536,7 @@ def chat_reply(user, s, pending):
     answer = tidy_text(ask_ai(TUTOR, ctx + f"現在的問題：{s}"))
     log.append({"q": s, "a": answer[:600]})   # 記憶只留摘要長度，顯示仍是完整答案
     set_state(user, "chat", json.dumps({"log": log[-6:]}, ensure_ascii=False))
-    return answer
+    return split_bubbles(answer)
 
 
 def start_capture(user):
