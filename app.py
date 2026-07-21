@@ -218,7 +218,7 @@ def tidy_text(t):
     return t.strip()
 
 
-def split_bubbles(text, max_bubbles=5, soft=460):
+def split_bubbles(text, max_bubbles=5, soft=380):
     """長回覆在段落（空行）處拆成多則訊息，手機上比一大坨泡泡好讀。"""
     text = (text or "").strip()
     if len(text) <= soft:
