@@ -60,6 +60,10 @@ handler = WebhookHandler(LINE_SECRET)
 gemini = genai.Client(api_key=GEMINI_KEY)
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
+# Groq：免費額度大又快。有設 GROQ_API_KEY 就當主力，Gemini 自動變備援
+GROQ_KEY = os.environ.get("GROQ_API_KEY")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+
 TW = datetime.timezone(datetime.timedelta(hours=8))
 tw_today = lambda: datetime.datetime.now(TW).date().isoformat()
 tw_now = lambda: datetime.datetime.now(TW).strftime("%Y-%m-%d %H:%M")
@@ -127,8 +131,8 @@ def count_hypotheses(user):
     return (res or {}).get("count", 0)
 
 
-# ---------- Gemini ----------
-def ask_gemini(system_prompt: str, user_text: str, temp=0.6) -> str:
+# ---------- AI 呼叫：Groq 主力 + Gemini 備援 ----------
+def _gemini_call(system_prompt: str, user_text: str, temp=0.6) -> str:
     last = ""
     for attempt in range(3):
         try:
@@ -148,6 +152,38 @@ def ask_gemini(system_prompt: str, user_text: str, temp=0.6) -> str:
                 continue
             break
     return f"⚠️ 呼叫 Gemini 失敗：{last}"
+
+
+def _groq_call(system_prompt: str, user_text: str, temp=0.6) -> str:
+    r = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {GROQ_KEY}",
+                 "Content-Type": "application/json"},
+        json={"model": GROQ_MODEL, "temperature": temp, "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text}]},
+        timeout=30)
+    r.raise_for_status()
+    return (r.json()["choices"][0]["message"]["content"] or "").strip()
+
+
+def ask_ai(system_prompt: str, user_text: str, temp=0.6) -> str:
+    """有設 Groq 就先用 Groq（免費額度大又快）；失敗或沒設就退回 Gemini。"""
+    if GROQ_KEY:
+        for attempt in range(2):
+            try:
+                out = _groq_call(system_prompt, user_text, temp)
+                if out:
+                    return out
+                break
+            except Exception as e:
+                msg = str(e)
+                if any(k in msg for k in ("429", "rate", "Too Many", "503")) and attempt < 1:
+                    time.sleep(1.0)
+                    continue
+                print("groq error → 退回 Gemini：", msg)
+                break
+    return _gemini_call(system_prompt, user_text, temp)
 
 
 def extract_json(s: str):
@@ -252,7 +288,7 @@ def teach_lesson(user):
         "結構：①一句話定義 ②為什麼重要 ③一個台股情境例子 ④最常見的誤用/陷阱。"
         f"最後用一行『🤔 想想看：』出 1 個開放式問題讓學生思考（不要給答案）。{SHORT}"
     )
-    body = tidy_text(ask_gemini(sys, f"教我：{topic}"))
+    body = tidy_text(ask_ai(sys, f"教我：{topic}"))
     add_lesson(user, {"source_type": "daily_lesson", "title": topic,
                       "ai_explanation": body[:2000], "user_understanding": "",
                       "created_at": tw_now()})
@@ -271,7 +307,7 @@ def handle_note(user, body):
         "②指出 1 個他可能還不確定或需要查證的地方。"
         "不要長篇，不要幫他下結論。繁體中文。"
     )
-    tidy = tidy_text(ask_gemini(sys, body))
+    tidy = tidy_text(ask_ai(sys, body))
     add_lesson(user, {"source_type": "book_note", "title": body[:30],
                       "ai_explanation": "", "user_understanding": body[:2000],
                       "corrected_note": tidy[:2000], "created_at": tw_now()})
@@ -323,7 +359,7 @@ def handle_idea(user, body):
     if not body:
         return ("用法：想法：書裡說連續3個月營收成長的股票比較會漲，我想驗證……\n"
                 "我會幫你分類 A/B/C/D，可回測的就轉成假設存起來。")
-    raw = ask_gemini(CLASSIFY_SYS, f"想法：{body}", temp=0.3)
+    raw = ask_ai(CLASSIFY_SYS, f"想法：{body}", temp=0.3)
     data = extract_json(raw)
     if not data:
         return f"⚠️ 分類時沒抓到結構，AI 原回覆：\n{raw[:400]}\n\n請換句話再說一次這個想法。"
@@ -471,7 +507,7 @@ def chat_reply(user, s, pending):
         ctx = ("（以下是我們剛剛的對話，請延續脈絡回答、不要重複已說過的內容）\n"
                + "\n".join(f"我問：{t.get('q','')}\n你答：{t.get('a','')[:180]}"
                            for t in log[-4:]) + "\n\n")
-    answer = tidy_text(ask_gemini(TUTOR, ctx + f"現在的問題：{s}"))
+    answer = tidy_text(ask_ai(TUTOR, ctx + f"現在的問題：{s}"))
     log.append({"q": s, "a": answer})
     set_state(user, "chat", json.dumps({"log": log[-6:]}, ensure_ascii=False))
     return answer
@@ -489,7 +525,7 @@ def start_capture(user):
            "topic=一句話主題；summary=3到5個重點（用換行分隔的字串）；"
            "question=一個能檢驗核心理解的問題（繁中）。"
            '格式：{"topic":"","summary":"","question":""}')
-    data = extract_json(ask_gemini(sys, convo, temp=0.3)) or {}
+    data = extract_json(ask_ai(sys, convo, temp=0.3)) or {}
     topic = data.get("topic") or "本次學習"
     summary = tidy_text(data.get("summary") or "")
     question = data.get("question") or "用你自己的話，說說剛剛學到的重點是什麼？"
@@ -512,7 +548,7 @@ def handle_verify(user, s, pending):
     else:
         sys = ("你是老師，依主題與問題評判學生回答，態度寬鬆鼓勵。只輸出 JSON："
                '{"grade":"懂了/大致懂/需加強 三選一","feedback":"一句話訂正或補充（繁中）"}')
-        j = extract_json(ask_gemini(
+        j = extract_json(ask_ai(
             sys, f"主題：{topic}\n問題：{question}\n學生回答：{s}", temp=0.3)) or {}
         grade = j.get("grade", "大致懂")
         feedback = j.get("feedback", "")
